@@ -85,10 +85,9 @@ def calculate_threat_score(is_geofence: bool, is_loitering: bool, object_class: 
         score += Config.W_UNEXPECTED
         
     # 4. Confidence Scaling
-    # Scale the base score by the model's confidence to ensure high-confidence threats rank higher
     scaled_score = score * confidence
     
-    return int(min(scaled_score, 100)) # Cap at 100
+    return int(min(scaled_score, 100))
 
 # --- Gemini Summary Functions ---
 def generate_gemini_summary(data: str, mode: str, object_id: Optional[int] = None) -> Optional[str]:
@@ -134,11 +133,7 @@ def process_video_stream(input_path: str, output_path: str, model: YOLO, progres
     Analyzes the video frame-by-frame, updating the UI and saving logs and trajectories.
     """
     all_alerts: List[Dict[str, Any]] = []
-    
-    # Store trajectories (ID -> List of [x, y, time_s, threat_score])
     trajectories = {} 
-    
-    # Cache for previous frame data {object_id: [x_center, y_center]}
     last_centers = {} 
     
     cap = cv2.VideoCapture(input_path)
@@ -149,7 +144,7 @@ def process_video_stream(input_path: str, output_path: str, model: YOLO, progres
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps_video = cap.get(cv2.CAP_PROP_FPS)
-    
+
     byte_tracker = sv.ByteTrack() 
     box_annotator = sv.BoxAnnotator(thickness=2) 
     label_annotator = sv.LabelAnnotator(text_thickness=1, text_scale=0.5)
@@ -190,7 +185,7 @@ def process_video_stream(input_path: str, output_path: str, model: YOLO, progres
                 
                 current_time_seconds = get_time_in_seconds(frame_index, fps_video)
                 
-                current_centers = {} # Centers for current frame
+                current_centers = {} 
 
                 if len(detections) > 0:
                     labels = []
@@ -208,12 +203,10 @@ def process_video_stream(input_path: str, output_path: str, model: YOLO, progres
                         
                         if tracker_id in last_centers:
                             prev_x, prev_y = last_centers[tracker_id]
-                            # Simple Euclidean distance for speed
                             displacement = np.sqrt((x_center - prev_x)**2 + (y_center - prev_y)**2)
                             speed_px_sec = displacement * fps_video
                             
-                            # Loitering defined as very low speed
-                            if speed_px_sec < 1.0: # 1 pixel/sec is effectively stopped
+                            if speed_px_sec < 1.0: 
                                 is_loitering = True
                         
                         # --- PREDICTIVE THREAT SCORING ---
@@ -237,8 +230,8 @@ def process_video_stream(input_path: str, output_path: str, model: YOLO, progres
                             'object_class': object_name,
                             'confidence': round(float(confidence), 2),
                             'Geofence_Alert': is_geofence_alert,
-                            'Threat_Score': threat_score, # NEW
-                            'Speed_Pixels_Sec': round(speed_px_sec, 2), # NEW
+                            'Threat_Score': threat_score,
+                            'Speed_Pixels_Sec': round(speed_px_sec, 2),
                             'bbox_xyxy': xyxy.tolist()
                         }
                         all_alerts.append(alert)
@@ -248,7 +241,6 @@ def process_video_stream(input_path: str, output_path: str, model: YOLO, progres
                 
                 sink.write_frame(frame=frame)
 
-                # Update centers for the next frame's speed calculation
                 last_centers = current_centers
                 
                 # --- STREAMLIT LIVE UPDATE ---
@@ -276,7 +268,7 @@ def process_video_stream(input_path: str, output_path: str, model: YOLO, progres
         cap.release()
         progress_bar.progress(1.0, text="Processing Complete!")
     
-    return all_alerts, trajectories # Return both logs and trajectories
+    return all_alerts, trajectories
 
 # =================================================================
 # 4. UI SECTIONS
@@ -306,7 +298,7 @@ def analysis_page():
     aoi_x_max = st.sidebar.number_input("X Max (0-1000)", min_value=0, max_value=1000, value=Config.AOI_COORDINATES[2], step=50)
     aoi_y_max = st.sidebar.number_input("Y Max (0-1000)", min_value=0, max_value=1000, value=Config.AOI_COORDINATES[3], step=50)
     
-    aoi_normalized = [aoi_x_min, aoi_y_min, aoi_x_max, aoi_y_max] # CORRECTED LINE
+    aoi_normalized = [aoi_x_min, aoi_y_min, aoi_x_max, aoi_y_max] 
 
     st.sidebar.markdown("---")
     st.sidebar.metric("YOLO Model Status", "Loaded" if model else "Failed")
@@ -367,7 +359,6 @@ def analysis_page():
                 df = pd.DataFrame(all_alerts)
                 df['object_id'] = df['object_id'].astype('int') 
                 
-                # Store trajectories separately
                 st.session_state['trajectories'] = trajectories
                 
                 # --- REPORT DATA PREP ---
@@ -376,8 +367,8 @@ def analysis_page():
                 time_logs_df = df.groupby(['object_id', 'object_class']).agg(
                     first_s=('time_s', 'min'),
                     last_s=('time_s', 'max'),
-                    max_threat=('Threat_Score', 'max'), # Include max threat score
-                    avg_speed=('Speed_Pixels_Sec', 'mean') # Include average speed
+                    max_threat=('Threat_Score', 'max'), 
+                    avg_speed=('Speed_Pixels_Sec', 'mean') 
                 ).reset_index()
                 time_logs_df['duration_s'] = round(time_logs_df['last_s'] - time_logs_df['first_s'], 2)
                 time_logs_df['avg_speed'] = round(time_logs_df['avg_speed'], 2)
@@ -392,7 +383,7 @@ def analysis_page():
             elif all_alerts is not None:
                 st.warning("No target objects detected in the video.")
             
-            st.experimental_set_query_params(tab="Reports")
+            st.query_params['tab'] = "📄 Reports & Downloads" # Update query parameter
 
     elif 'analysis_complete' in st.session_state and st.session_state['analysis_complete']:
         st.success("Analysis complete. Check the **Reports** tab for downloads and the AI Briefing.")
@@ -426,7 +417,7 @@ def reports_page():
         
         st.markdown("---")
         
-        # General Briefing (runs on tab load if needed)
+        # General Briefing 
         st.markdown("##### General Mission Briefing (Gemini)")
         if 'gemini_briefing' not in st.session_state or st.button("Generate/Regenerate General Briefing"):
              with st.spinner("Generating Mission Briefing..."):
@@ -455,15 +446,9 @@ def reports_page():
         selected_id = st.selectbox("Select Object ID to Visualize Path:", options=object_ids)
         
         if selected_id:
-            # Get data for the selected ID
             data = trajectories[selected_id]
             df_traj = pd.DataFrame(data, columns=['x', 'y', 'time_s', 'threat_score'])
             
-            # Use the first frame's coordinates for sizing/background
-            detailed_df = pd.read_json(st.session_state['detailed_json'], orient='records')
-            first_frame_data = detailed_df.iloc[0]
-            
-            # --- Plotting the Trajectory ---
             fig = go.Figure()
 
             # Plot the path
@@ -479,12 +464,12 @@ def reports_page():
             fig.add_trace(go.Scatter(x=[df_traj['x'].iloc[0]], y=[df_traj['y'].iloc[0]], mode='markers', name='START', marker=dict(size=12, color='green', symbol='star')))
             fig.add_trace(go.Scatter(x=[df_traj['x'].iloc[-1]], y=[df_traj['y'].iloc[-1]], mode='markers', name='END', marker=dict(size=12, color='red', symbol='square')))
 
-            # Customize layout to look like an image plane
+            # Customize layout
             fig.update_layout(
                 title=f"Trajectory of Object ID {selected_id} (Color = Threat Score)",
                 xaxis_title="X Coordinate (Pixels)",
                 yaxis_title="Y Coordinate (Pixels)",
-                yaxis={'autorange': 'reversed'}, # Invert Y-axis since video coordinates start top-left
+                yaxis={'autorange': 'reversed'}, 
                 height=600
             )
 
@@ -518,7 +503,6 @@ def reports_page():
         hypothesis_id = st.selectbox("Select Object ID for Behavioral Analysis:", options=object_ids, key='hypo_id')
         
         if hypothesis_id and st.button(f"Generate Hypothesis for ID {hypothesis_id}", type="secondary"):
-            # Filter the detailed JSON data for the selected ID
             df_full = pd.read_json(st.session_state['detailed_json'], orient='records')
             df_target = df_full[df_full['object_id'] == hypothesis_id]
             log_data_json = df_target.to_json(orient='records', indent=4)
@@ -555,8 +539,10 @@ def main():
     st.set_page_config(layout="wide", page_title="AI Surveillance Dashboard")
     
     tab_titles = ["📊 Analysis & Live Feed", "📄 Reports & Downloads"]
-    query_params = st.experimental_get_query_params()
-    default_tab = query_params.get("tab", ["Analysis & Live Feed"])[0]
+    
+    # --- FIX APPLIED HERE: Using st.query_params ---
+    query_params = st.query_params 
+    default_tab = query_params.get("tab", "📊 Analysis & Live Feed")
 
     try:
         active_tab_index = tab_titles.index(default_tab)
