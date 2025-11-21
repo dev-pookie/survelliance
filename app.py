@@ -7,7 +7,7 @@ import pandas as pd
 import time
 import tempfile
 import os
-import psutil  # [NEW] Required for System Metrics
+import psutil  # For System Telemetry
 import plotly.express as px
 import plotly.graph_objects as go
 from typing import List, Dict, Any, Optional
@@ -16,13 +16,21 @@ from typing import List, Dict, Any, Optional
 # 1. CONFIGURATION & UTILITIES
 # =================================================================
 
+# --- PAGE CONFIG (MUST BE FIRST) ---
+st.set_page_config(
+    page_title="Sentinel AI | Autonomous Intelligence",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 # --- INITIALIZATION ---
 GEMINI_CLIENT = None
-GEMINI_MODEL = 'gemini-1.5-flash' # Updated to a standard available model
+GEMINI_MODEL = 'gemini-2.5-flash'
 try:
     import google.genai as genai
-    # Tries to initialize client using GEMINI_API_KEY from environment variables
-    GEMINI_CLIENT = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+    # Attempts to grab API key from environment variable: GEMINI_API_KEY
+    GEMINI_CLIENT = genai.Client()
 except Exception:
     pass
 
@@ -33,7 +41,7 @@ class Config:
     COCO_NAMES: Dict[int, str] = {0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
     DEFAULT_TARGET_CLASSES: List[int] = [0, 2, 3, 5, 7] 
     
-    # Scoring Weights
+    # Scoring Weights for Predictive Threat
     W_GEOFENCE: int = 30 
     W_LOITER: int = 25   
     W_UNEXPECTED: int = 15 
@@ -49,10 +57,15 @@ def load_model():
         return None
 
 # --- HELPER FUNCTIONS ---
+def get_system_metrics():
+    """Returns CPU and RAM usage."""
+    return psutil.cpu_percent(), psutil.virtual_memory().percent
+
 def get_time_in_seconds(frame_index: int, fps: float) -> float:
     return round(frame_index / fps, 2)
 
 def is_in_aoi(x_center, y_center, aoi_normalized, width, height):
+    """Checks if object is inside the normalized Area of Interest."""
     x_min = int(aoi_normalized[0] * width / 1000)
     y_min = int(aoi_normalized[1] * height / 1000)
     x_max = int(aoi_normalized[2] * width / 1000)
@@ -60,27 +73,27 @@ def is_in_aoi(x_center, y_center, aoi_normalized, width, height):
     return x_min <= x_center <= x_max and y_min <= y_center <= y_max
 
 def calculate_threat_score(is_geofence, is_loitering, object_class, confidence):
+    """Calculates dynamic risk score (0-100)."""
     score = 0
     if is_geofence: score += Config.W_GEOFENCE
     if is_loitering: score += Config.W_LOITER
     if object_class not in Config.TYPICAL_CLASSES: score += Config.W_UNEXPECTED
     return int(min(score * confidence, 100))
 
-def generate_gemini_summary(data: str, mode: str, object_id: Optional[int] = None, user_query: str = "") -> str:
-    if not GEMINI_CLIENT: return "⚠️ Gemini API Key Missing. Export GEMINI_API_KEY."
+def generate_gemini_response(prompt_type: str, data_context: str, user_query: str = "") -> str:
+    if not GEMINI_CLIENT: return "⚠️ Gemini API Key Missing. Please export GEMINI_API_KEY."
     
-    # Truncate data if too large to avoid token limits
-    data_context = data[:15000] 
-
-    prompts = {
-        "BRIEFING": f"Generate a military-style mission briefing from these logs. Focus on threats, class counts, and anomalies.\nDATA:\n{data_context}",
-        "ANOMALY": f"Analyze logs for sudden spikes in activity or security breaches (Geofence).\nDATA:\n{data_context}",
-        "HYPOTHESIZE": f"Analyze movement history for Object {object_id}. Was it evading detection, loitering, or normal?\nDATA:\n{data_context}",
-        "CHAT": f"You are Sentinel AI. Answer the user's question based strictly on the log data provided.\nUser Question: {user_query}\nDATA:\n{data_context}"
+    system_prompts = {
+        "BRIEFING": "You are a military surveillance analyst. Write a concise mission briefing based on these logs. Focus on high-threat events.",
+        "ANOMALY": "Analyze logs for sudden spikes in object count or high-threat breaches.",
+        "HYPOTHESIZE": "Analyze the movement history of this object. Was it evading? Loitering? Provide a behavioral profile.",
+        "CHAT": "You are Sentinel AI, an autonomous surveillance assistant. Answer the user's question based strictly on the provided log data. Be professional and concise."
     }
     
+    full_prompt = f"{system_prompts[prompt_type]}\n\nCONTEXT DATA:\n{data_context}\n\nUSER QUERY:\n{user_query}"
+    
     try:
-        response = GEMINI_CLIENT.models.generate_content(model=GEMINI_MODEL, contents=[prompts[mode]])
+        response = GEMINI_CLIENT.models.generate_content(model=GEMINI_MODEL, contents=[full_prompt])
         return response.text
     except Exception as e:
         return f"AI Error: {e}"
@@ -100,6 +113,10 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
     trajectories = {}
     last_pos = {}
     
+    # AOI Coordinates for drawing
+    ax1, ay1 = int(aoi[0]*width/1000), int(aoi[1]*height/1000)
+    ax2, ay2 = int(aoi[2]*width/1000), int(aoi[3]*height/1000)
+    
     with sv.VideoSink(target_path=output_path, video_info=sv.VideoInfo(width=width, height=height, fps=fps)) as sink:
         start_time = time.time()
         frame_idx = 0
@@ -109,10 +126,8 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
             if not ret: break
             
             # Draw AOI
-            x1, y1 = int(aoi[0]*width/1000), int(aoi[1]*height/1000)
-            x2, y2 = int(aoi[2]*width/1000), int(aoi[3]*height/1000)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(frame, "RESTRICTED ZONE", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            cv2.rectangle(frame, (ax1, ay1), (ax2, ay2), (0, 255, 0), 2)
+            cv2.putText(frame, "RESTRICTED ZONE", (ax1, ay1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
             
             # Detect & Track
             res = model(frame, verbose=False)[0]
@@ -128,7 +143,7 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
                 name = model.names[cls_id]
                 xc, yc = (xyxy[0]+xyxy[2])/2, (xyxy[1]+xyxy[3])/2
                 
-                # Speed & Logic
+                # Speed & Loitering Logic
                 speed = 0.0
                 is_loiter = False
                 if trk_id in last_pos:
@@ -140,12 +155,16 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
                 in_aoi = is_in_aoi(xc, yc, aoi, width, height)
                 threat = calculate_threat_score(in_aoi, is_loiter, name, conf_score)
                 
-                # Store Data
+                # Store Trajectory Data
                 if trk_id not in trajectories: trajectories[trk_id] = []
                 trajectories[trk_id].append((xc, yc, current_time, threat))
                 
+                # Visuals
                 alert_tag = f"🚨 {threat}" if threat > 30 else ""
-                labels.append(f"ID:{trk_id} {alert_tag}")
+                labels.append(f"ID:{trk_id} {name} {alert_tag}")
+                
+                if threat > 50:
+                    cv2.circle(frame, (int(xc), int(yc)), 5, (0, 0, 255), -1)
                 
                 all_alerts.append({
                     "time_s": current_time, "object_id": int(trk_id), "object_class": name,
@@ -153,29 +172,27 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
                     "bbox": xyxy.tolist()
                 })
             
-            # Annotate & Save
+            # Annotate Frame
             frame = box_annotator.annotate(scene=frame, detections=dets)
             frame = label_annotator.annotate(scene=frame, detections=dets, labels=labels)
             sink.write_frame(frame)
             
-            # UI Updates (Throttled)
+            # UI Updates (Throttled to every 3rd frame for performance)
             if frame_idx % 3 == 0:
-                frame_place.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption="Live Feed", use_container_width=True)
+                frame_place.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption=f"Live Feed | Frame {frame_idx}", use_column_width=True)
+                
                 curr_fps = 1.0 / (time.time() - start_time) if (time.time() - start_time) > 0 else 0
                 start_time = time.time()
+                cpu, ram = get_system_metrics()
                 
-                # [NEW] System Metrics
-                cpu_usage = psutil.cpu_percent()
-                ram_usage = psutil.virtual_memory().percent
-
                 kpi_places[0].metric("FPS", f"{curr_fps:.1f}")
                 kpi_places[1].metric("Active Objects", len(dets))
-                kpi_places[2].metric("CPU Usage", f"{cpu_usage}%")
-                kpi_places[3].metric("RAM Usage", f"{ram_usage}%")
+                kpi_places[2].metric("CPU / RAM", f"{cpu}% / {ram}%")
                 
                 if all_alerts:
                     df = pd.DataFrame(all_alerts)
-                    log_place.dataframe(df.tail(5)[['time_s', 'object_class', 'Threat', 'Speed']], use_container_width=True)
+                    # Show most recent alerts
+                    log_place.dataframe(df.tail(8)[['time_s', 'object_id', 'object_class', 'Threat', 'Speed']], use_container_width=True)
                 
                 progress_bar.progress(min(frame_idx/total_frames, 1.0))
             
@@ -188,38 +205,30 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
 # =================================================================
 def render_home():
     st.title("🛡️ Sentinel AI: Autonomous Surveillance System")
-    st.markdown("### *From Autonomous Capture to Actionable Intelligence*")
-
+    
     col1, col2 = st.columns([2, 1])
-
     with col1:
         st.markdown("""
-        **Sentinel AI** is a next-generation security platform designed for high-stakes monitoring. 
-        It processes video feeds from autonomous vehicles (drones/rovers) to detect, track, and analyze threats in real-time.
+        ### *Situational Awareness for Autonomous Systems*
         
-        #### 🚀 Key Capabilities
-        * **👁️ Computer Vision:** Real-time object detection & tracking (YOLOv8 + ByteTrack).
-        * **🧠 Sentinel Chat:** Talk to your data using Google Gemini.
-        * **🔥 Heatmap Forensics:** Identify high-traffic choke points.
-        * **⚡ Predictive Threat Scoring:** Dynamic risk assessment based on geofencing and loitering.
-        * **📈 System Telemetry:** Live CPU/RAM monitoring for edge-deployment readiness.
+        **Sentinel AI** processes autonomous vehicle feeds to detect anomalies, track threats, and allow operators to **chat with their video data**.
+        
+        #### 🔥 Hackathon Innovations
+        1.  **💬 Sentinel Chat:** Ask natural language questions about your surveillance footage.
+        2.  **🗺️ Dynamic Heatmaps:** Visualize high-traffic zones and loitering hotspots.
+        3.  **⚡ Predictive Threat Scoring:** Real-time risk assessment (0-100) for every target.
+        4.  **🩺 System Telemetry:** Live monitoring of CPU/RAM for edge-deployment readiness.
         """)
-        
-        st.info("👈 **Select 'Live Surveillance' in the sidebar** to start a mission.")
+        st.info("👈 **Select 'Live Surveillance' to begin a mission.**")
 
     with col2:
         st.markdown("### System Status")
-        st.success("✅ AI Models Loaded")
-        
+        st.metric("System Status", "ONLINE", "Ready")
         if GEMINI_CLIENT:
-            st.success("✅ Gemini API Connected")
+            st.success("✅ Gemini Neural Core Connected")
         else:
-            st.error("❌ Gemini API Key Missing")
+            st.error("❌ Neural Core Disconnected")
             st.caption("Set `GEMINI_API_KEY` in env vars.")
-
-    st.markdown("---")
-    st.markdown("#### 🛠️ Pipeline Architecture")
-    st.code("Autonomous Vehicle (Input) -> YOLOv8 Detection -> ByteTrack -> Threat Engine -> Gemini Analyst -> Dashboard", language="bash")
 
 # =================================================================
 # 3. PAGE: LIVE SURVEILLANCE
@@ -227,72 +236,67 @@ def render_home():
 def render_surveillance():
     st.title("🔴 Live Mission Control")
 
-    # --- SIDEBAR CONFIG ---
-    st.sidebar.header("⚙️ Mission Parameters")
+    # --- SIDEBAR ---
+    st.sidebar.header("⚙️ Mission Config")
+    conf = st.sidebar.slider("Confidence", 0.0, 1.0, Config.CONFIDENCE_THRESHOLD)
+    
+    st.sidebar.subheader("🚨 Geofence (AOI)")
+    aoi_x1 = st.sidebar.number_input("X1 (0-1000)", 0, 1000, 200)
+    aoi_y1 = st.sidebar.number_input("Y1 (0-1000)", 0, 1000, 200)
+    aoi_x2 = st.sidebar.number_input("X2 (0-1000)", 0, 1000, 800)
+    aoi_y2 = st.sidebar.number_input("Y2 (0-1000)", 0, 1000, 800)
+    aoi = [aoi_x1, aoi_y1, aoi_x2, aoi_y2]
     
     class_names = list(Config.COCO_NAMES.values())
     default_names = [Config.COCO_NAMES[i] for i in Config.DEFAULT_TARGET_CLASSES]
-    selected_names = st.sidebar.multiselect("Target Classes", class_names, default_names)
+    selected_names = st.sidebar.multiselect("Targets", class_names, default_names)
     target_ids = [k for k, v in Config.COCO_NAMES.items() if v in selected_names]
+
+    # --- UPLOAD ---
+    uploaded_file = st.file_uploader("📥 Upload Autonomous Feed", type=['mp4', 'mov'])
     
-    conf = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, Config.CONFIDENCE_THRESHOLD)
-    
-    st.sidebar.divider()
-    st.sidebar.subheader("🚨 Geofence (AOI)")
-    st.sidebar.caption("Coordinates (0-1000 scale)")
-    aoi_x1 = st.sidebar.number_input("X Min", 0, 1000, 200)
-    aoi_y1 = st.sidebar.number_input("Y Min", 0, 1000, 200)
-    aoi_x2 = st.sidebar.number_input("X Max", 0, 1000, 800)
-    aoi_y2 = st.sidebar.number_input("Y Max", 0, 1000, 800)
-    aoi = [aoi_x1, aoi_y1, aoi_x2, aoi_y2]
-
-    # --- MAIN LAYOUT ---
-    col_feed, col_logs = st.columns([2, 1])
-
-    with col_feed:
-        st.subheader("🛰️ Video Feed")
-        video_placeholder = st.empty()
-        
-        # [NEW] Expanded KPI Matrix for System Metrics
-        m1, m2, m3, m4 = st.columns(4)
-        kpi_fps = m1.empty()
-        kpi_obj = m2.empty()
-        kpi_cpu = m3.empty()
-        kpi_ram = m4.empty()
-
-    with col_logs:
-        st.subheader("📝 Threat Log")
-        log_placeholder = st.empty()
-
-    # --- UPLOAD & PROCESS ---
-    uploaded_file = st.file_uploader("📥 Upload Autonomous Feed (MP4)", type=['mp4', 'mov'])
-
     if uploaded_file:
         tfile = tempfile.NamedTemporaryFile(delete=False)
         tfile.write(uploaded_file.read())
-        
         output_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
         st.session_state['video_path'] = output_path 
         
-        if st.button("▶️ INITIALIZE SURVEILLANCE", type="primary"):
-            st.toast("Mission Started...", icon="🚀")
+        if st.button("▶️ EXECUTE SURVEILLANCE PROTOCOL", type="primary"):
+            st.session_state['analysis_complete'] = False
+            
+            # Layout
+            c_vid, c_log = st.columns([3, 2])
+            with c_vid: 
+                st.markdown("##### 🛰️ Optical Feed")
+                video_place = st.empty()
+            with c_log: 
+                st.markdown("##### 📝 Live Threat Log")
+                log_place = st.empty()
+            
+            # Metrics
+            st.markdown("##### 🩺 System Telemetry")
+            m1, m2, m3 = st.columns(3)
+            kpi1, kpi2, kpi3 = m1.empty(), m2.empty(), m3.empty()
             prog_bar = st.progress(0)
             
             model = load_model()
             if model:
                 alerts, trajectories = process_video(
                     tfile.name, output_path, model, conf, target_ids, aoi,
-                    prog_bar, video_placeholder, log_placeholder, 
-                    [kpi_fps, kpi_obj, kpi_cpu, kpi_ram] # Passed extra KPIs
+                    prog_bar, video_place, log_place, [kpi1, kpi2, kpi3]
                 )
                 
-                # Save Data for Reports Page
-                st.session_state['alerts'] = alerts
-                st.session_state['trajectories'] = trajectories
-                st.session_state['mission_complete'] = True
-                
-                st.success("Mission Complete. Data transferred to Forensics.")
-                os.unlink(tfile.name) # Cleanup input
+                # Save State
+                if alerts:
+                    df = pd.DataFrame(alerts)
+                    st.session_state['detailed_json'] = df.to_json(orient='records')
+                    st.session_state['alerts_df'] = df
+                    st.session_state['trajectories'] = trajectories
+                    st.session_state['analysis_complete'] = True
+                    st.success("Protocol Complete. Intelligence Ready.")
+                else:
+                    st.warning("No targets detected.")
+                os.unlink(tfile.name)
 
 # =================================================================
 # 4. PAGE: FORENSIC REPORTS
@@ -300,154 +304,117 @@ def render_surveillance():
 def render_reports():
     st.title("🧠 Forensic Intelligence Hub")
 
-    if 'mission_complete' not in st.session_state:
-        st.warning("⚠️ No Mission Data Found. Please run a Live Surveillance mission first.")
+    if not st.session_state.get('analysis_complete'):
+        st.info("⚠️ Awaiting Mission Data. Run Live Surveillance first.")
         return
 
-    # Load Data
-    df = pd.DataFrame(st.session_state['alerts'])
+    # Data Loading
+    df = st.session_state['alerts_df']
     trajectories = st.session_state['trajectories']
 
     # --- TABS ---
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Statistics & Heatmaps", "📍 Trajectories", "🤖 Sentinel Chat", "💾 Export"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 Sentinel Chat", "🗺️ Heatmaps & Paths", "📊 Stats", "💾 Export"])
 
-    # 1. STATISTICS & HEATMAPS
+    # 1. SENTINEL CHAT (THE KILLER FEATURE)
     with tab1:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Detections", len(df))
-        c2.metric("Max Threat Score", df['Threat'].max(), delta="CRITICAL" if df['Threat'].max() > 80 else "Normal")
-        c3.metric("Unique Entities", df['object_id'].nunique())
+        st.subheader("💬 Chat with your Video Data")
+        st.caption("Ask questions like: 'How many red cars were there?', 'Did anyone loiter?', 'What was the highest threat score?'")
         
-        st.divider()
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = []
+
+        for message in st.session_state.chat_history:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        if prompt := st.chat_input("Ask Sentinel AI..."):
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            with st.chat_message("user"): st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                with st.spinner("Analyzing logs..."):
+                    # Create a summary context (CSV) to save tokens
+                    context = df[['time_s', 'object_class', 'Threat', 'Speed', 'AOI_Breach']].to_csv(index=False)
+                    # Limit context size for API
+                    response = generate_gemini_response("CHAT", context[:15000], prompt)
+                    st.markdown(response)
+                    st.session_state.chat_history.append({"role": "assistant", "content": response})
+
+    # 2. HEATMAPS & PATHS
+    with tab2:
+        st.subheader("🗺️ Forensics Visualization")
+        c1, c2 = st.columns(2)
         
-        col_h1, col_h2 = st.columns(2)
-        with col_h1:
-            st.subheader("Threat Distribution")
-            fig_hist = px.histogram(df, x="Threat", color="object_class", nbins=20, title="Threat Score Frequency")
-            st.plotly_chart(fig_hist, use_container_width=True)
-            
-        with col_h2:
-            # [NEW] Dynamic Heatmap Implementation
-            st.subheader("🔥 Activity Heatmap")
-            # Flatten trajectory data for heatmap
-            heat_data = []
+        with c1:
+            st.markdown("##### 🔥 Activity Heatmap (High Traffic Zones)")
+            all_x, all_y = [], []
             for tid, points in trajectories.items():
                 for p in points:
-                    heat_data.append({'x': p[0], 'y': p[1], 'threat': p[3]})
-            df_heat = pd.DataFrame(heat_data)
+                    all_x.append(p[0])
+                    all_y.append(p[1])
             
-            if not df_heat.empty:
-                fig_heat = px.density_heatmap(
-                    df_heat, x='x', y='y', z='threat', 
-                    nbinsx=20, nbinsy=20, 
-                    color_continuous_scale='Viridis',
-                    title="High Traffic & Threat Zones"
-                )
-                fig_heat.update_layout(yaxis=dict(autorange='reversed')) # Match image coords
+            if all_x:
+                fig_heat = px.density_heatmap(x=all_x, y=all_y, nbinsx=20, nbinsy=20, title="Movement Density Distribution")
+                fig_heat.update_layout(xaxis_title="X", yaxis_title="Y", yaxis=dict(autorange='reversed'))
                 st.plotly_chart(fig_heat, use_container_width=True)
-            else:
-                st.info("No movement data for heatmaps.")
-
-    # 2. TRAJECTORY
-    with tab2:
-        st.subheader("Interactive Path Analysis")
-        obj_ids = sorted(list(trajectories.keys()))
-        selected_id = st.selectbox("Select Subject ID to Trace:", obj_ids)
         
-        if selected_id:
-            data = trajectories[selected_id]
-            path_df = pd.DataFrame(data, columns=['x', 'y', 'time', 'threat'])
-            
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=path_df['x'], y=path_df['y'], 
-                mode='lines+markers',
-                marker=dict(color=path_df['threat'], colorscale='RdYlGn_r', size=10, showscale=True),
-                text=path_df['time'],
-                name=f"ID {selected_id}"
-            ))
-            fig.update_layout(
-                title=f"Movement History: Subject {selected_id}",
-                xaxis_title="X Coordinate", yaxis_title="Y Coordinate",
-                yaxis=dict(autorange='reversed'), height=600,
-                images=[dict(
-                    source="https://placehold.co/600x400?text=Video+Reference", # Placeholder for frame reference
-                    xref="x", yref="y",
-                    x=0, y=0,
-                    sizex=1000, sizey=1000,
-                    sizing="stretch",
-                    opacity=0.2,
-                    layer="below")]
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        with c2:
+            st.markdown("##### 📍 Individual Trajectory Path")
+            obj_ids = sorted(list(trajectories.keys()))
+            sel_id = st.selectbox("Select Target ID", obj_ids)
+            if sel_id:
+                data = trajectories[sel_id]
+                path_df = pd.DataFrame(data, columns=['x', 'y', 'time', 'threat'])
+                fig_path = go.Figure()
+                fig_path.add_trace(go.Scatter(x=path_df['x'], y=path_df['y'], mode='lines+markers', 
+                                         marker=dict(color=path_df['threat'], colorscale='Reds', size=8),
+                                         name=f'ID {sel_id}'))
+                fig_path.update_layout(title=f"Path ID {sel_id}", yaxis=dict(autorange='reversed'))
+                st.plotly_chart(fig_path, use_container_width=True)
 
-    # 3. AI ANALYST
+    # 3. STATISTICS & HYPOTHESES
     with tab3:
-        st.subheader("💬 Sentinel Chat & Analysis")
+        st.subheader("🤖 AI Behavioral and Statistical Analysis")
+        c_stat, c_ai = st.columns(2)
+        with c_stat:
+            st.markdown("##### Threat Score Distribution")
+            st.plotly_chart(px.histogram(df, x='Threat', color='object_class'), use_container_width=True)
         
-        c_gen, c_out = st.columns([1, 2])
-        with c_gen:
-            task = st.radio("Select AI Mode:", ["Sentinel Chat", "Mission Briefing", "Anomaly Detection", "Subject Hypothesis"])
-            
-            user_query = ""
-            target_id = None
-            
-            if task == "Sentinel Chat":
-                user_query = st.text_area("Ask Sentinel:", placeholder="Did anyone stop near the entrance?")
-            
-            if task == "Subject Hypothesis":
-                target_id = st.selectbox("Select Subject:", sorted(list(trajectories.keys())))
-            
-            if st.button("Run AI Analysis ✨", type="primary"):
-                with st.spinner("Processing Intelligence..."):
-                    # Prepare JSON data
-                    json_data = df.to_json()
-                    if task == "Subject Hypothesis":
-                        json_data = df[df['object_id'] == target_id].to_json()
-                    
-                    # Map radio button to mode string
-                    mode_map = {
-                        "Sentinel Chat": "CHAT",
-                        "Mission Briefing": "BRIEFING",
-                        "Anomaly Detection": "ANOMALY",
-                        "Subject Hypothesis": "HYPOTHESIZE"
-                    }
-                    res = generate_gemini_summary(json_data, mode_map[task], target_id, user_query)
-                    st.session_state['ai_result'] = res
-        
-        with c_out:
-            if 'ai_result' in st.session_state:
-                st.markdown("### 📄 Intelligence Report")
-                st.info(st.session_state['ai_result'])
+        with c_ai:
+            st.markdown("##### AI Behavioral Analysis")
+            target_id = st.selectbox("Analyze Behavior of ID:", sorted(list(trajectories.keys())), key="hypo_id")
+            if st.button("Generate Behavioral Hypothesis"):
+                with st.spinner("Profiling..."):
+                    obj_logs = df[df['object_id'] == target_id].to_json()
+                    res = generate_gemini_response("HYPOTHESIZE", obj_logs, object_id=target_id)
+                    st.info(res)
 
     # 4. EXPORT
     with tab4:
-        st.subheader("Download Evidence")
+        st.subheader("💾 Mission Archives")
         c1, c2 = st.columns(2)
         with c1:
-            st.download_button("⬇️ Download JSON Logs", df.to_json(), "mission_logs.json", "application/json")
-            st.download_button("⬇️ Download CSV Report", df.to_csv(), "mission_report.csv", "text/csv")
+            st.download_button("⬇️ Download JSON Logs", st.session_state['detailed_json'], "logs.json", "application/json")
+            st.download_button("⬇️ Download CSV Report", df.to_csv().encode('utf-8'), "report.csv", "text/csv")
         with c2:
-            if os.path.exists(st.session_state['video_path']):
+            if os.path.exists(st.session_state.get('video_path', '')):
                 with open(st.session_state['video_path'], "rb") as f:
-                    st.download_button("⬇️ Download Annotated Video", f, "evidence_video.mp4", "video/mp4")
+                    st.download_button("⬇️ Download Annotated Evidence (MP4)", f, "evidence.mp4", "video/mp4")
+            else:
+                 st.info("Annotated video file not yet available.")
+
 
 # =================================================================
-# 5. MAIN NAVIGATION CONTROLLER
+# 5. MAIN NAVIGATION
 # =================================================================
 def main():
-    st.set_page_config(page_title="Sentinel AI", page_icon="🛡️", layout="wide")
-    
-    # Sidebar Navigation
+    # Sidebar Navigation using Radio Buttons (Best for Single-File Apps)
     st.sidebar.title("Navigation")
     page = st.sidebar.radio("Go to", ["🏠 Home", "🔴 Live Surveillance", "🧠 Forensic Reports"])
     
-    if page == "🏠 Home":
-        render_home()
-    elif page == "🔴 Live Surveillance":
-        render_surveillance()
-    elif page == "🧠 Forensic Reports":
-        render_reports()
+    if page == "🏠 Home": render_home()
+    elif page == "🔴 Live Surveillance": render_surveillance()
+    elif page == "🧠 Forensic Reports": render_reports()
 
 if __name__ == "__main__":
     main()
