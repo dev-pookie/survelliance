@@ -1,0 +1,6 @@
+supervision
+ultralytics
+pandas
+numpy
+opencv-python
+google-genai
