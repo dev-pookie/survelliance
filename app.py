@@ -4,19 +4,20 @@ import pandas as pd
 import numpy as np
 import cv2 
 import os
-import json # Still needed for Gemini summary input
+import json 
 from typing import List, Dict, Any, Optional
 
 # --- GEMINI API INTEGRATION ---
 try:
     import google.genai as genai
-    # Ensure GEMINI_API_KEY environment variable is set
+    # Ensure GEMINI_API_KEY environment variable is set in your environment
     GEMINI_CLIENT = genai.Client()
     GEMINI_MODEL = 'gemini-2.5-flash'
 except ImportError:
     print("Warning: 'google-genai' not found. Cannot generate AI summary.")
     GEMINI_CLIENT = None
 except Exception as e:
+    # This block will catch an error if the API key is missing or invalid
     print(f"Error initializing Gemini client: {e}")
     GEMINI_CLIENT = None
 # -----------------------------
@@ -41,7 +42,7 @@ class Config:
     TEXT_THICKNESS: int = 1
 
 # =================================================================
-# 2. INITIALIZATION & UTILITIES (Same)
+# 2. INITIALIZATION & UTILITIES
 # =================================================================
 
 all_alerts: List[Dict[str, Any]] = []
@@ -102,7 +103,7 @@ def generate_gemini_summary(summary_data: str) -> Optional[str]:
         return f"Gemini API Error: {e}"
 
 # =================================================================
-# 4. FRAME PROCESSING FUNCTION (Same)
+# 4. FRAME PROCESSING FUNCTION
 # =================================================================
 
 def process_frame(frame: np.ndarray, frame_index: int) -> np.ndarray:
@@ -152,7 +153,7 @@ def main():
     print(f"Input Video: {Config.VIDEO_PATH} | Output Video: {Config.OUTPUT_VIDEO_PATH}")
     print("-" * 35)
 
-    # --- STEP 6: VIDEO PROCESSING LOOP (Same) ---
+    # --- STEP 6: VIDEO PROCESSING LOOP ---
     cap = cv2.VideoCapture(Config.VIDEO_PATH)
     target_video_info = sv.VideoInfo(
         width=video_info.width,
@@ -191,10 +192,10 @@ def main():
     briefing_txt_path = f"{Config.REPORT_NAME}_briefing.txt"
     
     # 1. Full Detailed Report (TXT)
-    # The to_string() method is used to get a clean, formatted text table.
     with open(detailed_txt_path, 'w') as f:
         f.write("--- FULL DETAILED REPORT (FRAME-BY-FRAME LOG) ---\n\n")
-        f.write(df.to_string(index=False)) # index=False removes the pandas row numbers
+        # Use to_string() for a clean, formatted text table
+        f.write(df.to_string(index=False)) 
     
     # 2. Time Logs (Data Prep and TXT output)
     time_logs_df = df.groupby(['object_id', 'object_class']).agg(
@@ -206,7 +207,6 @@ def main():
     # Save Time Logs to TXT
     with open(time_logs_txt_path, 'w') as f:
         f.write("--- TIME LOGS (UNIQUE OBJECT PRESENCE) ---\n\n")
-        # Include original start/end times for full detail
         f.write(time_logs_df.to_string(index=False)) 
     
     print("\n--- FINAL MISSION REPORT FILES ---")
@@ -216,9 +216,7 @@ def main():
     # 3. GENERATE AI SUMMARY USING GEMINI
     print("\n--- GENERATING AI BRIEFING (Gemini API) ---")
     
-    # **IMPORTANT:** Gemini needs structured JSON to understand the data columns well. 
-    # We convert the DataFrame back to JSON *in memory* for the API call, 
-    # but still save the final report as a TXT file.
+    # Convert the time logs DataFrame to JSON string *in memory* for the API call
     summary_json_text = time_logs_df.to_json(orient='records', indent=4)
 
     # Call the Gemini function
@@ -234,17 +232,8 @@ def main():
             f.write(gemini_report)
         print(f"3. AI Briefing saved to: {briefing_txt_path}")
         print("\n[AI-Generated Briefing Preview]")
-        # Only print the first 500 characters for a quick look
+        # Print a preview of the report
         print(gemini_report[:500] + ('...' if len(gemini_report) > 500 else ''))
 
 if __name__ == "__main__":
     main()
-# 
-
-[Image of conceptual diagram of AI data flow]
-
-This video demonstrates how to use the pandas library to read and write different text-based file formats, including `.txt`, which is essential for generating your detailed and time log reports.
-[How to Convert DataFrame into Text File using Python Pandas](https://www.youtube.com/watch?v=9EFhyeG-nXc)
-
-
-http://googleusercontent.com/youtube_content/1
