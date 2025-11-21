@@ -7,6 +7,7 @@ import pandas as pd
 import time
 import tempfile
 import os
+import psutil  # [NEW] Required for System Metrics
 import plotly.express as px
 import plotly.graph_objects as go
 from typing import List, Dict, Any, Optional
@@ -17,11 +18,11 @@ from typing import List, Dict, Any, Optional
 
 # --- INITIALIZATION ---
 GEMINI_CLIENT = None
-GEMINI_MODEL = 'gemini-2.5-flash'
+GEMINI_MODEL = 'gemini-1.5-flash' # Updated to a standard available model
 try:
     import google.genai as genai
     # Tries to initialize client using GEMINI_API_KEY from environment variables
-    GEMINI_CLIENT = genai.Client()
+    GEMINI_CLIENT = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 except Exception:
     pass
 
@@ -65,13 +66,17 @@ def calculate_threat_score(is_geofence, is_loitering, object_class, confidence):
     if object_class not in Config.TYPICAL_CLASSES: score += Config.W_UNEXPECTED
     return int(min(score * confidence, 100))
 
-def generate_gemini_summary(data: str, mode: str, object_id: Optional[int] = None) -> str:
+def generate_gemini_summary(data: str, mode: str, object_id: Optional[int] = None, user_query: str = "") -> str:
     if not GEMINI_CLIENT: return "⚠️ Gemini API Key Missing. Export GEMINI_API_KEY."
     
+    # Truncate data if too large to avoid token limits
+    data_context = data[:15000] 
+
     prompts = {
-        "BRIEFING": f"Generate a mission briefing from these logs. Focus on threats, class counts, and anomalies.\nDATA:\n{data}",
-        "ANOMALY": f"Analyze logs for sudden spikes in activity or security breaches (Geofence).\nDATA:\n{data[:5000]}",
-        "HYPOTHESIZE": f"Analyze movement history for Object {object_id}. Was it evading detection, loitering, or normal?\nDATA:\n{data}"
+        "BRIEFING": f"Generate a military-style mission briefing from these logs. Focus on threats, class counts, and anomalies.\nDATA:\n{data_context}",
+        "ANOMALY": f"Analyze logs for sudden spikes in activity or security breaches (Geofence).\nDATA:\n{data_context}",
+        "HYPOTHESIZE": f"Analyze movement history for Object {object_id}. Was it evading detection, loitering, or normal?\nDATA:\n{data_context}",
+        "CHAT": f"You are Sentinel AI. Answer the user's question based strictly on the log data provided.\nUser Question: {user_query}\nDATA:\n{data_context}"
     }
     
     try:
@@ -107,6 +112,7 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
             x1, y1 = int(aoi[0]*width/1000), int(aoi[1]*height/1000)
             x2, y2 = int(aoi[2]*width/1000), int(aoi[3]*height/1000)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, "RESTRICTED ZONE", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
             # Detect & Track
             res = model(frame, verbose=False)[0]
@@ -153,13 +159,19 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
             sink.write_frame(frame)
             
             # UI Updates (Throttled)
-            if frame_idx % 2 == 0:
-                frame_place.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption="Live Feed (Green Box = AOI)", use_column_width=True)
+            if frame_idx % 3 == 0:
+                frame_place.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption="Live Feed", use_container_width=True)
                 curr_fps = 1.0 / (time.time() - start_time) if (time.time() - start_time) > 0 else 0
                 start_time = time.time()
                 
+                # [NEW] System Metrics
+                cpu_usage = psutil.cpu_percent()
+                ram_usage = psutil.virtual_memory().percent
+
                 kpi_places[0].metric("FPS", f"{curr_fps:.1f}")
                 kpi_places[1].metric("Active Objects", len(dets))
+                kpi_places[2].metric("CPU Usage", f"{cpu_usage}%")
+                kpi_places[3].metric("RAM Usage", f"{ram_usage}%")
                 
                 if all_alerts:
                     df = pd.DataFrame(all_alerts)
@@ -187,9 +199,10 @@ def render_home():
         
         #### 🚀 Key Capabilities
         * **👁️ Computer Vision:** Real-time object detection & tracking (YOLOv8 + ByteTrack).
-        * **🧠 Cognitive Analysis:** Google Gemini AI integration for behavioral hypothesizing.
+        * **🧠 Sentinel Chat:** Talk to your data using Google Gemini.
+        * **🔥 Heatmap Forensics:** Identify high-traffic choke points.
         * **⚡ Predictive Threat Scoring:** Dynamic risk assessment based on geofencing and loitering.
-        * **📊 Forensic Trajectories:** Interactive path mapping for post-mission review.
+        * **📈 System Telemetry:** Live CPU/RAM monitoring for edge-deployment readiness.
         """)
         
         st.info("👈 **Select 'Live Surveillance' in the sidebar** to start a mission.")
@@ -239,9 +252,13 @@ def render_surveillance():
     with col_feed:
         st.subheader("🛰️ Video Feed")
         video_placeholder = st.empty()
-        m1, m2 = st.columns(2)
+        
+        # [NEW] Expanded KPI Matrix for System Metrics
+        m1, m2, m3, m4 = st.columns(4)
         kpi_fps = m1.empty()
         kpi_obj = m2.empty()
+        kpi_cpu = m3.empty()
+        kpi_ram = m4.empty()
 
     with col_logs:
         st.subheader("📝 Threat Log")
@@ -251,7 +268,6 @@ def render_surveillance():
     uploaded_file = st.file_uploader("📥 Upload Autonomous Feed (MP4)", type=['mp4', 'mov'])
 
     if uploaded_file:
-        # Save temp file
         tfile = tempfile.NamedTemporaryFile(delete=False)
         tfile.write(uploaded_file.read())
         
@@ -266,7 +282,8 @@ def render_surveillance():
             if model:
                 alerts, trajectories = process_video(
                     tfile.name, output_path, model, conf, target_ids, aoi,
-                    prog_bar, video_placeholder, log_placeholder, [kpi_fps, kpi_obj]
+                    prog_bar, video_placeholder, log_placeholder, 
+                    [kpi_fps, kpi_obj, kpi_cpu, kpi_ram] # Passed extra KPIs
                 )
                 
                 # Save Data for Reports Page
@@ -292,18 +309,44 @@ def render_reports():
     trajectories = st.session_state['trajectories']
 
     # --- TABS ---
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Statistics", "📍 Trajectories", "🤖 AI Analyst", "💾 Export"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Statistics & Heatmaps", "📍 Trajectories", "🤖 Sentinel Chat", "💾 Export"])
 
-    # 1. STATISTICS
+    # 1. STATISTICS & HEATMAPS
     with tab1:
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Detections", len(df))
         c2.metric("Max Threat Score", df['Threat'].max(), delta="CRITICAL" if df['Threat'].max() > 80 else "Normal")
         c3.metric("Unique Entities", df['object_id'].nunique())
         
-        st.subheader("Threat Distribution")
-        fig = px.histogram(df, x="Threat", color="object_class", nbins=20, title="Threat Score Frequency")
-        st.plotly_chart(fig, use_container_width=True)
+        st.divider()
+        
+        col_h1, col_h2 = st.columns(2)
+        with col_h1:
+            st.subheader("Threat Distribution")
+            fig_hist = px.histogram(df, x="Threat", color="object_class", nbins=20, title="Threat Score Frequency")
+            st.plotly_chart(fig_hist, use_container_width=True)
+            
+        with col_h2:
+            # [NEW] Dynamic Heatmap Implementation
+            st.subheader("🔥 Activity Heatmap")
+            # Flatten trajectory data for heatmap
+            heat_data = []
+            for tid, points in trajectories.items():
+                for p in points:
+                    heat_data.append({'x': p[0], 'y': p[1], 'threat': p[3]})
+            df_heat = pd.DataFrame(heat_data)
+            
+            if not df_heat.empty:
+                fig_heat = px.density_heatmap(
+                    df_heat, x='x', y='y', z='threat', 
+                    nbinsx=20, nbinsy=20, 
+                    color_continuous_scale='Viridis',
+                    title="High Traffic & Threat Zones"
+                )
+                fig_heat.update_layout(yaxis=dict(autorange='reversed')) # Match image coords
+                st.plotly_chart(fig_heat, use_container_width=True)
+            else:
+                st.info("No movement data for heatmaps.")
 
     # 2. TRAJECTORY
     with tab2:
@@ -326,23 +369,37 @@ def render_reports():
             fig.update_layout(
                 title=f"Movement History: Subject {selected_id}",
                 xaxis_title="X Coordinate", yaxis_title="Y Coordinate",
-                yaxis=dict(autorange='reversed'), height=600
+                yaxis=dict(autorange='reversed'), height=600,
+                images=[dict(
+                    source="https://placehold.co/600x400?text=Video+Reference", # Placeholder for frame reference
+                    xref="x", yref="y",
+                    x=0, y=0,
+                    sizex=1000, sizey=1000,
+                    sizing="stretch",
+                    opacity=0.2,
+                    layer="below")]
             )
             st.plotly_chart(fig, use_container_width=True)
 
     # 3. AI ANALYST
     with tab3:
+        st.subheader("💬 Sentinel Chat & Analysis")
+        
         c_gen, c_out = st.columns([1, 2])
         with c_gen:
-            st.subheader("Ask the AI")
-            task = st.radio("Select Task:", ["Mission Briefing", "Anomaly Detection", "Subject Hypothesis"])
+            task = st.radio("Select AI Mode:", ["Sentinel Chat", "Mission Briefing", "Anomaly Detection", "Subject Hypothesis"])
             
+            user_query = ""
             target_id = None
+            
+            if task == "Sentinel Chat":
+                user_query = st.text_area("Ask Sentinel:", placeholder="Did anyone stop near the entrance?")
+            
             if task == "Subject Hypothesis":
                 target_id = st.selectbox("Select Subject:", sorted(list(trajectories.keys())))
             
-            if st.button("Generate Report ✨", type="primary"):
-                with st.spinner("Analyzing Intelligence..."):
+            if st.button("Run AI Analysis ✨", type="primary"):
+                with st.spinner("Processing Intelligence..."):
                     # Prepare JSON data
                     json_data = df.to_json()
                     if task == "Subject Hypothesis":
@@ -350,16 +407,17 @@ def render_reports():
                     
                     # Map radio button to mode string
                     mode_map = {
+                        "Sentinel Chat": "CHAT",
                         "Mission Briefing": "BRIEFING",
                         "Anomaly Detection": "ANOMALY",
                         "Subject Hypothesis": "HYPOTHESIZE"
                     }
-                    res = generate_gemini_summary(json_data, mode_map[task], target_id)
+                    res = generate_gemini_summary(json_data, mode_map[task], target_id, user_query)
                     st.session_state['ai_result'] = res
         
         with c_out:
             if 'ai_result' in st.session_state:
-                st.markdown("### 📄 AI Report")
+                st.markdown("### 📄 Intelligence Report")
                 st.info(st.session_state['ai_result'])
 
     # 4. EXPORT
