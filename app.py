@@ -18,14 +18,18 @@ GEMINI_CLIENT = None
 GEMINI_MODEL = 'gemini-2.5-flash'
 try:
     import google.genai as genai
-    GEMINI_CLIENT = genai.Client(api_key="")
-except:
-    pass
+    # This will initialize if GEMINI_API_KEY is set in the environment
+    GEMINI_CLIENT = genai.Client()
+except ImportError:
+    pass # Handle in UI
+except Exception:
+    pass # Handle in UI
 
 class Config:
     """Central configuration for the analysis."""
     MODEL_PATH: str = "yolov8n.pt"
-    # Target classes default list (can be overridden by UI)
+    # FIX: Re-added the missing default attribute required by st.sidebar.slider
+    CONFIDENCE_THRESHOLD: float = 0.5      
     COCO_NAMES: Dict[int, str] = {0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
     DEFAULT_TARGET_CLASSES: List[int] = [0, 2, 3, 5, 7] 
     REPORT_NAME: str = "surveillance_mission"
@@ -35,6 +39,7 @@ class Config:
 # =================================================================
 
 def get_time_in_seconds(frame_index: int, fps: float) -> float:
+    """Calculates the time in seconds for a given frame index."""
     return round(frame_index / fps, 2)
 
 @st.cache_resource
@@ -83,7 +88,8 @@ def generate_gemini_summary(summary_data: str, mode: str = "BRIEFING") -> Option
 
 def process_video_stream(input_path: str, output_path: str, model: YOLO, progress_bar, log_table_placeholder, annotated_frame_placeholder, conf_thresh, target_classes_ids):
     """
-    Analyzes the video frame-by-frame and yields data for real-time update.
+    Analyzes the video frame-by-frame, updates the UI, and saves the output.
+    Returns a list of all alert dictionaries.
     """
     all_alerts: List[Dict[str, Any]] = []
     
@@ -176,7 +182,7 @@ def analysis_page():
     # 1. SIDEBAR CONFIGURATION (For Clean UX)
     st.sidebar.header("🎯 Tracking Configuration")
     
-    # Confidence Threshold
+    # Confidence Threshold (This is where the error was occurring)
     conf_thresh = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, Config.CONFIDENCE_THRESHOLD, 0.05)
     
     # Target Class Selection
@@ -191,7 +197,12 @@ def analysis_page():
     target_classes_ids = [class_name_map[name] for name in selected_classes_names]
 
     st.sidebar.markdown("---")
-    st.sidebar.metric("YOLO Model Status", "Loaded")
+    st.sidebar.metric("YOLO Model Status", "Loaded" if model else "Failed")
+
+    if not GEMINI_CLIENT:
+        st.sidebar.error("Gemini API key is MISSING or INVALID. AI reports will fail.")
+    else:
+        st.sidebar.success("Gemini Client Active.")
     
     # 2. FILE UPLOAD & START BUTTON
     uploaded_file = st.file_uploader("Upload a video file (MP4 recommended)", type=["mp4", "mov", "avi"])
@@ -200,7 +211,7 @@ def analysis_page():
     if 'output_video_path' not in st.session_state:
         st.session_state['output_video_path'] = None
     
-    if uploaded_file is not None:
+    if uploaded_file is not None and model:
         
         # Streamlit's temporary file management
         with tempfile.NamedTemporaryFile(delete=False) as tfile:
@@ -239,7 +250,6 @@ def analysis_page():
                 st.error(f"An error occurred during video processing: {e}")
                 all_alerts = None
             finally:
-                # Clean up input temp file
                 os.unlink(input_path) 
 
             st.markdown("---")
@@ -268,6 +278,7 @@ def analysis_page():
             elif all_alerts is not None:
                 st.warning("No target objects detected in the video based on the configured threshold and classes.")
             
+            # Switch to reports tab after completion
             st.experimental_set_query_params(tab="Reports")
 
     elif 'analysis_complete' in st.session_state and st.session_state['analysis_complete']:
@@ -327,7 +338,6 @@ def reports_page():
         st.markdown("##### Anomaly Detection (Spikes/Drops)")
         if st.button("Run Anomaly Report"):
             with st.spinner("Analyzing anomalies..."):
-                # We use the detailed JSON for anomaly detection
                 anomaly_report = generate_gemini_summary(st.session_state['detailed_json'], mode="ANOMALY")
                 st.session_state['anomaly_report'] = anomaly_report
         
