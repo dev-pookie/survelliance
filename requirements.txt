@@ -6,3 +6,4 @@ opencv-python
 google-genai
 streamlit
 plotly
+psutil
