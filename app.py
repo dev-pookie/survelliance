@@ -4,15 +4,14 @@ import pandas as pd
 import numpy as np
 import cv2 
 import os
-import json # New import for handling JSON data
+import json # Still needed for Gemini summary input
 from typing import List, Dict, Any, Optional
 
 # --- GEMINI API INTEGRATION ---
 try:
-    # Requires 'google-genai' package
     import google.genai as genai
-    # Initialize the client (API key must be set in GEMINI_API_KEY env var)
-    GEMINI_CLIENT = genai.Client(api_key="AIzaSyAALTx2X1XruDfWBbMdQjIVLtdLXe6u4pg")
+    # Ensure GEMINI_API_KEY environment variable is set
+    GEMINI_CLIENT = genai.Client()
     GEMINI_MODEL = 'gemini-2.5-flash'
 except ImportError:
     print("Warning: 'google-genai' not found. Cannot generate AI summary.")
@@ -29,23 +28,20 @@ except Exception as e:
 class Config:
     """Central configuration for the surveillance analysis script."""
     
-    # --- FILE PATHS ---
-    VIDEO_PATH: str = "surv_4.mp4"         # <<-- Input video file
+    VIDEO_PATH: str = "surv_2.mp4"         
     OUTPUT_VIDEO_PATH: str = "annotated_mission_output.mp4"
-    REPORT_JSON_NAME: str = "surveillance_report" # Base name for JSON reports
+    REPORT_NAME: str = "surveillance_mission" # Base name for all reports
 
-    # --- MODEL & THRESHOLDS ---
     MODEL_PATH: str = "yolov8n.pt"
     CONFIDENCE_THRESHOLD: float = 0.5      
-    TARGET_CLASSES: List[int] = [0, 2, 3, 5, 7] # 0='person', 2='car', etc.
+    TARGET_CLASSES: List[int] = [0, 2, 3, 5, 7] 
 
-    # --- ANNOTATION STYLE ---
     BOX_THICKNESS: int = 2
     TEXT_SCALE: float = 0.5
     TEXT_THICKNESS: int = 1
 
 # =================================================================
-# 2. INITIALIZATION & UTILITIES
+# 2. INITIALIZATION & UTILITIES (Same)
 # =================================================================
 
 all_alerts: List[Dict[str, Any]] = []
@@ -66,7 +62,6 @@ except Exception as e:
     exit()
 
 byte_tracker: sv.ByteTrack = sv.ByteTrack() 
-
 box_annotator: sv.BoxAnnotator = sv.BoxAnnotator(thickness=Config.BOX_THICKNESS) 
 label_annotator: sv.LabelAnnotator = sv.LabelAnnotator(
     text_thickness=Config.TEXT_THICKNESS, 
@@ -76,7 +71,6 @@ label_annotator: sv.LabelAnnotator = sv.LabelAnnotator(
 )
 
 def get_time_in_seconds(frame_index: int, video_info: sv.VideoInfo) -> float:
-    """Calculates the time in seconds for a given frame index."""
     return round(frame_index / video_info.fps, 2)
 
 # =================================================================
@@ -85,16 +79,16 @@ def get_time_in_seconds(frame_index: int, video_info: sv.VideoInfo) -> float:
 
 def generate_gemini_summary(summary_data: str) -> Optional[str]:
     """
-    Uses the Gemini API to generate a natural language summary from the structured JSON data.
+    Uses the Gemini API to generate a natural language summary from the structured data.
     """
     if not GEMINI_CLIENT:
         return "Gemini client not initialized. Cannot generate AI summary."
 
     prompt = (
-        "Analyze the following JSON data from a surveillance video report. The JSON is a list "
-        "of objects tracked, their class, and the duration they were visible (in seconds). "
-        "Generate a **concise, high-level summary suitable for a mission briefing report** (1-3 sentences), "
-        "focusing on the **total count of unique objects** by class and the **longest visible duration**."
+        "Analyze the following JSON time logs from a surveillance report. The logs show "
+        "when each unique tracked object first appeared (`first_s`), last appeared (`last_s`), and the total `duration_s`."
+        "Generate a **concise, high-level summary suitable for a mission briefing report** (1-3 paragraphs), "
+        "including a breakdown of the number of unique objects by class, and highlighting the longest-tracked object."
         f"\n\nJSON Data:\n{summary_data}"
     )
 
@@ -108,11 +102,11 @@ def generate_gemini_summary(summary_data: str) -> Optional[str]:
         return f"Gemini API Error: {e}"
 
 # =================================================================
-# 4. FRAME PROCESSING FUNCTION (Unchanged)
+# 4. FRAME PROCESSING FUNCTION (Same)
 # =================================================================
 
 def process_frame(frame: np.ndarray, frame_index: int) -> np.ndarray:
-    # ... (function body remains the same as the previous revision)
+    
     results = MODEL(frame)[0]
     detections: sv.Detections = sv.Detections.from_ultralytics(results)
     
@@ -158,7 +152,7 @@ def main():
     print(f"Input Video: {Config.VIDEO_PATH} | Output Video: {Config.OUTPUT_VIDEO_PATH}")
     print("-" * 35)
 
-    # --- STEP 6: VIDEO PROCESSING LOOP ---
+    # --- STEP 6: VIDEO PROCESSING LOOP (Same) ---
     cap = cv2.VideoCapture(Config.VIDEO_PATH)
     target_video_info = sv.VideoInfo(
         width=video_info.width,
@@ -184,7 +178,7 @@ def main():
     cap.release()
     print(f"\nAnnotated video saved to: {Config.OUTPUT_VIDEO_PATH}")
     
-    # --- STEP 7: GENERATE REPORTS (JSON) and SUMMARY (GEMINI) ---
+    # --- STEP 7: GENERATE THREE REPORTS (.TXT) ---
     if not all_alerts:
         print("No objects were detected.")
         return
@@ -192,45 +186,65 @@ def main():
     df = pd.DataFrame(all_alerts)
     df['object_id'] = df['object_id'].astype('int') 
     
-    detailed_json_path = f"{Config.REPORT_JSON_NAME}_detailed.json"
-    summary_json_path = f"{Config.REPORT_JSON_NAME}_summary.json"
+    detailed_txt_path = f"{Config.REPORT_NAME}_detailed_report.txt"
+    time_logs_txt_path = f"{Config.REPORT_NAME}_time_logs.txt"
+    briefing_txt_path = f"{Config.REPORT_NAME}_briefing.txt"
     
-    # 1. Detailed Log (JSON)
-    df.to_json(detailed_json_path, orient='records', indent=4)
+    # 1. Full Detailed Report (TXT)
+    # The to_string() method is used to get a clean, formatted text table.
+    with open(detailed_txt_path, 'w') as f:
+        f.write("--- FULL DETAILED REPORT (FRAME-BY-FRAME LOG) ---\n\n")
+        f.write(df.to_string(index=False)) # index=False removes the pandas row numbers
     
-    # 2. Summary Report (JSON)
-    summary_df = df.groupby(['object_id', 'object_class']).agg(
+    # 2. Time Logs (Data Prep and TXT output)
+    time_logs_df = df.groupby(['object_id', 'object_class']).agg(
         first_s=('time_s', 'min'),
         last_s=('time_s', 'max')
     ).reset_index()
-    summary_df['duration_s'] = round(summary_df['last_s'] - summary_df['first_s'], 2)
-    summary_df.drop(columns=['first_s', 'last_s'], inplace=True)
-    summary_df.to_json(summary_json_path, orient='records', indent=4) # Sticking with 'records'
+    time_logs_df['duration_s'] = round(time_logs_df['last_s'] - time_logs_df['first_s'], 2)
+    
+    # Save Time Logs to TXT
+    with open(time_logs_txt_path, 'w') as f:
+        f.write("--- TIME LOGS (UNIQUE OBJECT PRESENCE) ---\n\n")
+        # Include original start/end times for full detail
+        f.write(time_logs_df.to_string(index=False)) 
     
     print("\n--- FINAL MISSION REPORT FILES ---")
-    print(f"Detailed Log saved to: {detailed_json_path}")
-    print(f"Summary Report saved to: {summary_json_path}")
+    print(f"1. Detailed Log (All Frames): {detailed_txt_path}")
+    print(f"2. Time Logs (Start/End/Duration): {time_logs_txt_path}")
     
     # 3. GENERATE AI SUMMARY USING GEMINI
-    print("\n--- GENERATING AI SUMMARY (Gemini API) ---")
+    print("\n--- GENERATING AI BRIEFING (Gemini API) ---")
     
-    # Read the summary JSON file content
-    with open(summary_json_path, 'r') as f:
-        summary_json_text = f.read()
+    # **IMPORTANT:** Gemini needs structured JSON to understand the data columns well. 
+    # We convert the DataFrame back to JSON *in memory* for the API call, 
+    # but still save the final report as a TXT file.
+    summary_json_text = time_logs_df.to_json(orient='records', indent=4)
 
     # Call the Gemini function
     gemini_report = generate_gemini_summary(summary_json_text)
 
-    # Print or save the AI-generated report
+    # Print and save the AI-generated report
     if gemini_report.startswith("Gemini API Error") or gemini_report.startswith("Gemini client not initialized"):
-        print(f"Failed to generate summary: {gemini_report}")
+        print(f"Failed to generate briefing: {gemini_report}")
     else:
-        print("\n[AI-Generated Briefing]")
-        print(gemini_report)
-        # Optional: Save the summary to a text file
-        # with open(f"{Config.REPORT_JSON_NAME}_briefing.txt", 'w') as f:
-        #     f.write(gemini_report)
-        # print(f"Briefing saved to: {Config.REPORT_JSON_NAME}_briefing.txt")
+        # Save the summary to the new text file
+        with open(briefing_txt_path, 'w') as f:
+            f.write(f"--- AI-GENERATED MISSION BRIEFING ({GEMINI_MODEL}) ---\n\n")
+            f.write(gemini_report)
+        print(f"3. AI Briefing saved to: {briefing_txt_path}")
+        print("\n[AI-Generated Briefing Preview]")
+        # Only print the first 500 characters for a quick look
+        print(gemini_report[:500] + ('...' if len(gemini_report) > 500 else ''))
 
 if __name__ == "__main__":
     main()
+# 
+
+[Image of conceptual diagram of AI data flow]
+
+This video demonstrates how to use the pandas library to read and write different text-based file formats, including `.txt`, which is essential for generating your detailed and time log reports.
+[How to Convert DataFrame into Text File using Python Pandas](https://www.youtube.com/watch?v=9EFhyeG-nXc)
+
+
+http://googleusercontent.com/youtube_content/1
