@@ -20,7 +20,7 @@ GEMINI_CLIENT = None
 GEMINI_MODEL = 'gemini-2.5-flash'
 try:
     import google.genai as genai
-    GEMINI_CLIENT = genai.Client(api_key="")
+    GEMINI_CLIENT = genai.Client()
 except:
     pass
 
@@ -544,12 +544,11 @@ def main():
     query_params = st.query_params 
     default_tab = query_params.get("tab", "📊 Analysis & Live Feed")
 
-    try:
-        active_tab_index = tab_titles.index(default_tab)
-    except ValueError:
-        active_tab_index = 0
-
-    tab1, tab2 = st.tabs(tab_titles, active_tab_index)
+    # Find the requested tab title and use it with active_tab keyword argument
+    active_tab = default_tab if default_tab in tab_titles else tab_titles[0]
+    
+    # --- CORRECTED st.tabs() CALL ---
+    tab1, tab2 = st.tabs(tab_titles, active_tab=active_tab)
 
     with tab1:
         analysis_page()
