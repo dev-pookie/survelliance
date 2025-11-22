@@ -17,6 +17,7 @@ from typing import List, Dict, Any, Optional
 # =================================================================
 
 # --- PAGE CONFIG (MUST BE FIRST) ---
+# Note: The theme is primarily set in .streamlit/config.toml
 st.set_page_config(
     page_title="Sentinel AI | Autonomous Intelligence",
     page_icon="🛡️",
@@ -28,6 +29,7 @@ st.set_page_config(
 GEMINI_CLIENT = None
 GEMINI_MODEL = 'gemini-2.5-flash'
 try:
+    # Requires google-genai SDK: pip install google-genai
     import google.genai as genai
     # Attempts to grab API key from environment variable: GEMINI_API_KEY
     GEMINI_CLIENT = genai.Client()
@@ -51,6 +53,7 @@ class Config:
 @st.cache_resource
 def load_model():
     try:
+        # Requires ultralytics: pip install ultralytics
         return YOLO(Config.MODEL_PATH)
     except Exception as e:
         st.error(f"Model Load Error: {e}")
@@ -105,8 +108,10 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
     fps = cap.get(5)
     total_frames = int(cap.get(7))
     
+    # Requires supervision: pip install supervision
     tracker = sv.ByteTrack()
-    box_annotator = sv.BoxAnnotator(thickness=2)
+    # Use a custom color for the annotator to match the theme's primary color (#F0C530)
+    box_annotator = sv.BoxAnnotator(thickness=2, color=sv.Color(r=240, g=197, b=48))
     label_annotator = sv.LabelAnnotator(text_scale=0.5)
     
     all_alerts = []
@@ -126,8 +131,9 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
             if not ret: break
             
             # Draw AOI
-            cv2.rectangle(frame, (ax1, ay1), (ax2, ay2), (0, 255, 0), 2)
-            cv2.putText(frame, "RESTRICTED ZONE", (ax1, ay1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            # Use a high-visibility color for the geofence (yellow-green)
+            cv2.rectangle(frame, (ax1, ay1), (ax2, ay2), (48, 255, 240), 2)
+            cv2.putText(frame, "RESTRICTED ZONE", (ax1, ay1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (48, 255, 240), 2)
             
             # Detect & Track
             res = model(frame, verbose=False)[0]
@@ -145,7 +151,7 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
                 
                 # Speed & Loitering Logic
                 speed = 0.0
-                is_loiter = False
+                is_loiter = False # Initialization: FIX is_loiter is defined here.
                 if trk_id in last_pos:
                     dist = np.linalg.norm(np.array([xc, yc]) - np.array(last_pos[trk_id]))
                     speed = dist * fps
@@ -153,7 +159,7 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
                 last_pos[trk_id] = (xc, yc)
                 
                 in_aoi = is_in_aoi(xc, yc, aoi, width, height)
-                threat = calculate_threat_score(in_aoi, is_loiter, name, conf_score)
+                threat = calculate_threat_score(in_aoi, is_loiter, name, conf_score) # is_loiter is now guaranteed to be defined
                 
                 # Store Trajectory Data
                 if trk_id not in trajectories: trajectories[trk_id] = []
@@ -164,7 +170,8 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
                 labels.append(f"ID:{trk_id} {name} {alert_tag}")
                 
                 if threat > 50:
-                    cv2.circle(frame, (int(xc), int(yc)), 5, (0, 0, 255), -1)
+                    # Draw high threat circle (Bright Red)
+                    cv2.circle(frame, (int(xc), int(yc)), 5, (0, 0, 255), -1) 
                 
                 all_alerts.append({
                     "time_s": current_time, "object_id": int(trk_id), "object_class": name,
@@ -204,26 +211,49 @@ def process_video(input_path, output_path, model, conf, classes, aoi, progress_b
 # 2. PAGE: HOME
 # =================================================================
 def render_home():
+    # Inject CSS for a high-contrast 'info'/'success' boxes
+    st.markdown("""
+        <style>
+        .stAlert div[data-testid="stInfoContent"] {
+            background-color: #2D3035 !important;
+            border-left: 8px solid #F0C530 !important;
+        }
+        .stAlert div[data-testid="stSuccessContent"] {
+            background-color: #2D3035 !important;
+            border-left: 8px solid #4CAF50 !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
     st.title("🛡️ Sentinel AI: Autonomous Surveillance System")
+    
+    st.markdown("---") 
     
     col1, col2 = st.columns([2, 1])
     with col1:
-        st.markdown("""
-        ### *Situational Awareness for Autonomous Systems*
+        st.markdown(f"""
+        <p style="font-size: 18px; color: #F0C530;">
+        <b>MISSION:</b> Situational Awareness for Autonomous Systems
+        </p>
         
         **Sentinel AI** processes autonomous vehicle feeds to detect anomalies, track threats, and allow operators to **chat with their video data**.
         
-        #### 🔥 Hackathon Innovations
-        1.  **💬 Sentinel Chat:** Ask natural language questions about your surveillance footage.
-        2.  **🗺️ Dynamic Heatmaps:** Visualize high-traffic zones and loitering hotspots.
-        3.  **⚡ Predictive Threat Scoring:** Real-time risk assessment (0-100) for every target.
-        4.  **🩺 System Telemetry:** Live monitoring of CPU/RAM for edge-deployment readiness.
-        """)
-        st.info("👈 **Select 'Live Surveillance' to begin a mission.**")
+        ### 🔥 Core Intelligence Capabilities
+        * **💬 Sentinel Chat:** Ask natural language questions about your surveillance footage.
+        * **🗺️ Dynamic Heatmaps:** Visualize high-traffic zones and loitering hotspots.
+        * **⚡ Predictive Threat Scoring:** Real-time risk assessment (0-100) for every target.
+        * **🩺 System Telemetry:** Live monitoring of CPU/RAM for edge-deployment readiness.
+        """, unsafe_allow_html=True)
+        
+        st.info("👈 **Select 'Live Surveillance' to begin a mission.**", icon="🎯")
 
     with col2:
         st.markdown("### System Status")
         st.metric("System Status", "ONLINE", "Ready")
+        
+        st.markdown("---")
+        
+        st.markdown("##### Neural Core Connection")
         if GEMINI_CLIENT:
             st.success("✅ Gemini Neural Core Connected")
         else:
@@ -235,25 +265,31 @@ def render_home():
 # =================================================================
 def render_surveillance():
     st.title("🔴 Live Mission Control")
+    st.markdown("---")
 
     # --- SIDEBAR ---
     st.sidebar.header("⚙️ Mission Config")
-    conf = st.sidebar.slider("Confidence", 0.0, 1.0, Config.CONFIDENCE_THRESHOLD)
+    conf = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, Config.CONFIDENCE_THRESHOLD)
     
     st.sidebar.subheader("🚨 Geofence (AOI)")
-    aoi_x1 = st.sidebar.number_input("X1 (0-1000)", 0, 1000, 200)
-    aoi_y1 = st.sidebar.number_input("Y1 (0-1000)", 0, 1000, 200)
-    aoi_x2 = st.sidebar.number_input("X2 (0-1000)", 0, 1000, 800)
-    aoi_y2 = st.sidebar.number_input("Y2 (0-1000)", 0, 1000, 800)
-    aoi = [aoi_x1, aoi_y1, aoi_x2, aoi_y2]
+    st.sidebar.caption("Normalized coordinates (0-1000)")
+    c_x1, c_y1 = st.sidebar.columns(2)
+    aoi_x1 = c_x1.number_input("X1", 0, 1000, 200, key="x1")
+    aoi_y1 = c_y1.number_input("Y1", 0, 1000, 200, key="y1")
+    c_x2, c_y2 = st.sidebar.columns(2)
+    aoi_x2 = c_x2.number_input("X2", 0, 1000, 800, key="x2")
+    aoi_y2 = c_y2.number_input("Y2", 0, 1000, 800, key="y2")
+    
+    # FIX APPLIED HERE: corrected ai_x2 to aoi_x2
+    aoi = [aoi_x1, aoi_y1, aoi_x2, aoi_y2] 
     
     class_names = list(Config.COCO_NAMES.values())
     default_names = [Config.COCO_NAMES[i] for i in Config.DEFAULT_TARGET_CLASSES]
-    selected_names = st.sidebar.multiselect("Targets", class_names, default_names)
+    selected_names = st.sidebar.multiselect("Targets to Track", class_names, default_names)
     target_ids = [k for k, v in Config.COCO_NAMES.items() if v in selected_names]
 
     # --- UPLOAD ---
-    uploaded_file = st.file_uploader("📥 Upload Autonomous Feed", type=['mp4', 'mov'])
+    uploaded_file = st.file_uploader("📥 Upload Autonomous Feed (MP4/MOV)", type=['mp4', 'mov'])
     
     if uploaded_file:
         tfile = tempfile.NamedTemporaryFile(delete=False)
@@ -273,8 +309,10 @@ def render_surveillance():
                 st.markdown("##### 📝 Live Threat Log")
                 log_place = st.empty()
             
+            st.markdown("---")
+            
             # Metrics
-            st.markdown("##### 🩺 System Telemetry")
+            st.markdown("##### 🩺 System Telemetry & Progress")
             m1, m2, m3 = st.columns(3)
             kpi1, kpi2, kpi3 = m1.empty(), m2.empty(), m3.empty()
             prog_bar = st.progress(0)
@@ -302,7 +340,26 @@ def render_surveillance():
 # 4. PAGE: FORENSIC REPORTS
 # =================================================================
 def render_reports():
+    # Inject CSS for a high-contrast 'info' box
+    st.markdown("""
+        <style>
+        .stAlert div[data-testid="stInfoContent"] {
+            background-color: #2D3035 !important;
+            border-left: 8px solid #F0C530 !important;
+        }
+        .stAlert div[data-testid="stSuccessContent"] {
+            background-color: #2D3035 !important;
+            border-left: 8px solid #4CAF50 !important;
+        }
+        .stAlert div[data-testid="stWarningContent"] {
+            background-color: #2D3035 !important;
+            border-left: 8px solid #FFA500 !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
     st.title("🧠 Forensic Intelligence Hub")
+    st.markdown("---")
 
     if not st.session_state.get('analysis_complete'):
         st.info("⚠️ Awaiting Mission Data. Run Live Surveillance first.")
@@ -318,7 +375,8 @@ def render_reports():
     # 1. SENTINEL CHAT (THE KILLER FEATURE)
     with tab1:
         st.subheader("💬 Chat with your Video Data")
-        st.caption("Ask questions like: 'How many red cars were there?', 'Did anyone loiter?', 'What was the highest threat score?'")
+        st.caption("Ask questions like: 'How many vehicles were in the restricted zone?', 'Did anyone loiter?', 'What was the maximum threat score?'")
+        st.markdown("---")
         
         if "chat_history" not in st.session_state:
             st.session_state.chat_history = []
@@ -343,6 +401,7 @@ def render_reports():
     # 2. HEATMAPS & PATHS
     with tab2:
         st.subheader("🗺️ Forensics Visualization")
+        st.markdown("---")
         c1, c2 = st.columns(2)
         
         with c1:
@@ -355,7 +414,9 @@ def render_reports():
             
             if all_x:
                 fig_heat = px.density_heatmap(x=all_x, y=all_y, nbinsx=20, nbinsy=20, title="Movement Density Distribution")
-                fig_heat.update_layout(xaxis_title="X", yaxis_title="Y", yaxis=dict(autorange='reversed'))
+                fig_heat.update_layout(xaxis_title="X", yaxis_title="Y", yaxis=dict(autorange='reversed'), 
+                                       coloraxis_colorbar=dict(title="Density"),
+                                       plot_bgcolor='#181A1F', paper_bgcolor='#181A1F') # Set plot background to secondary color
                 st.plotly_chart(fig_heat, use_container_width=True)
         
         with c2:
@@ -367,50 +428,56 @@ def render_reports():
                 path_df = pd.DataFrame(data, columns=['x', 'y', 'time', 'threat'])
                 fig_path = go.Figure()
                 fig_path.add_trace(go.Scatter(x=path_df['x'], y=path_df['y'], mode='lines+markers', 
-                                         marker=dict(color=path_df['threat'], colorscale='Reds', size=8),
-                                         name=f'ID {sel_id}'))
-                fig_path.update_layout(title=f"Path ID {sel_id}", yaxis=dict(autorange='reversed'))
+                                              line=dict(color='#F0C530'), # Use primary color for line
+                                              marker=dict(color=path_df['threat'], colorscale='Plasma', size=8, line=dict(width=1, color='White')),
+                                              name=f'ID {sel_id}'))
+                fig_path.update_layout(title=f"Path ID {sel_id}", yaxis=dict(autorange='reversed'),
+                                       plot_bgcolor='#181A1F', paper_bgcolor='#181A1F')
                 st.plotly_chart(fig_path, use_container_width=True)
 
     # 3. STATISTICS & HYPOTHESES
     with tab3:
         st.subheader("🤖 AI Behavioral and Statistical Analysis")
+        st.markdown("---")
         c_stat, c_ai = st.columns(2)
         with c_stat:
             st.markdown("##### Threat Score Distribution")
-            st.plotly_chart(px.histogram(df, x='Threat', color='object_class'), use_container_width=True)
+            fig_hist = px.histogram(df, x='Threat', color='object_class', color_discrete_sequence=px.colors.qualitative.Plotly)
+            fig_hist.update_layout(plot_bgcolor='#181A1F', paper_bgcolor='#181A1F')
+            st.plotly_chart(fig_hist, use_container_width=True)
         
         with c_ai:
             st.markdown("##### AI Behavioral Analysis")
             target_id = st.selectbox("Analyze Behavior of ID:", sorted(list(trajectories.keys())), key="hypo_id")
-            if st.button("Generate Behavioral Hypothesis"):
+            if st.button("Generate Behavioral Hypothesis", type="primary"):
                 with st.spinner("Profiling..."):
                     obj_logs = df[df['object_id'] == target_id].to_json()
-                    res = generate_gemini_response("HYPOTHESIZE", obj_logs, object_id=target_id)
-                    st.info(res)
+                    res = generate_gemini_response("HYPOTHESIZE", obj_logs, user_query=f"Analyze ID {target_id}")
+                    st.info(res) 
 
     # 4. EXPORT
     with tab4:
         st.subheader("💾 Mission Archives")
+        st.markdown("---")
         c1, c2 = st.columns(2)
         with c1:
-            st.download_button("⬇️ Download JSON Logs", st.session_state['detailed_json'], "logs.json", "application/json")
-            st.download_button("⬇️ Download CSV Report", df.to_csv().encode('utf-8'), "report.csv", "text/csv")
+            st.download_button("⬇️ Download JSON Logs", st.session_state['detailed_json'], "logs.json", "application/json", use_container_width=True)
+            st.download_button("⬇️ Download CSV Report", df.to_csv().encode('utf-8'), "report.csv", "text/csv", use_container_width=True)
         with c2:
             if os.path.exists(st.session_state.get('video_path', '')):
                 with open(st.session_state['video_path'], "rb") as f:
-                    st.download_button("⬇️ Download Annotated Evidence (MP4)", f, "evidence.mp4", "video/mp4")
+                    st.download_button("⬇️ Download Annotated Evidence (MP4)", f.read(), "evidence.mp4", "video/mp4", use_container_width=True)
             else:
-                 st.info("Annotated video file not yet available.")
+                st.info("Annotated video file not yet available.")
 
 
 # =================================================================
 # 5. MAIN NAVIGATION
 # =================================================================
 def main():
-    # Sidebar Navigation using Radio Buttons (Best for Single-File Apps)
-    st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to", ["🏠 Home", "🔴 Live Surveillance", "🧠 Forensic Reports"])
+    # Sidebar Navigation using Radio Buttons 
+    st.sidebar.markdown("## 🧭 Navigation")
+    page = st.sidebar.radio("Mission Control", ["🏠 Home", "🔴 Live Surveillance", "🧠 Forensic Reports"])
     
     if page == "🏠 Home": render_home()
     elif page == "🔴 Live Surveillance": render_surveillance()

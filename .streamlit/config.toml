@@ -1,0 +1,20 @@
+# .streamlit/config.toml
+
+[theme]
+# Primary Dark Theme
+base = "dark" 
+
+# Background color (Dark Black)
+backgroundColor = "#0E1117"
+
+# Sidebar and Secondary background (Slightly lighter dark for contrast)
+secondaryBackgroundColor = "#181A1F" 
+
+# Primary accent color (The 'busy.bar' red/orange/gold feel)
+primaryColor = "#F0C530"
+
+# Text color (White)
+textColor = "#FAFAFA"
+
+# Font (Optional, but can help consistency)
+font = "sans serif"
