@@ -7,3 +7,4 @@ google-genai
 streamlit
 plotly
 psutil
+streamlit-option-menu
