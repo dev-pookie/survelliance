@@ -107,20 +107,60 @@ def calculate_threat_score(is_geofence, is_loitering, object_class, confidence):
     if object_class not in Config.TYPICAL_CLASSES: score += Config.W_UNEXPECTED
     return int(min(score * confidence, 100))
 
-def generate_gemini_response(prompt_type: str, data_context: str, user_query: str = "") -> str:
+def generate_gemini_response(prompt_type: str, data_context: str, user_query: str = "", video_path: str = None) -> str:
+    """
+    Generates a response using Gemini, optionally including video context.
+    """
     if not GEMINI_CLIENT: return "⚠️ Gemini API Key Missing. Please export GEMINI_API_KEY."
     
     system_prompts = {
         "BRIEFING": "You are a military surveillance analyst. Write a concise mission briefing based on these logs. Focus on high-threat events.",
         "ANOMALY": "Analyze logs for sudden spikes in object count or high-threat breaches.",
         "HYPOTHESIZE": "Analyze the movement history of this object. Was it evading? Loitering? Provide a behavioral profile.",
-        "CHAT": "You are Sentinel AI, an autonomous surveillance assistant. Answer the user's question based strictly on the provided log data. Be professional and concise."
+        "CHAT": "You are Sentinel AI, an autonomous surveillance assistant. You have access to the VIDEO footage and the data LOGS. Cross-reference visual details with the logs to answer. Be professional and concise."
     }
     
-    full_prompt = f"{system_prompts[prompt_type]}\n\nCONTEXT DATA:\n{data_context}\n\nUSER QUERY:\n{user_query}"
+    # 1. Prepare Text Prompt
+    text_prompt = f"{system_prompts.get(prompt_type, system_prompts['CHAT'])}\n\nLOG DATA:\n{data_context}\n\nUSER QUERY:\n{user_query}"
     
+    contents = [text_prompt]
+
+    # 2. Upload/Attach Video (Only for CHAT or specific analysis if path exists)
+    # We check session_state to avoid re-uploading the same video on every chat message
+    if video_path and os.path.exists(video_path):
+        current_video_key = f"gemini_vid_{video_path}"
+        
+        # If we haven't uploaded this specific video yet, do it now
+        if current_video_key not in st.session_state:
+            try:
+                # Provide a visual indicator for the user
+                status_placeholder = st.empty()
+                status_placeholder.info("⚡ Uploading video to AI Vision Core for analysis...")
+                
+                # Upload using Google GenAI SDK
+                video_file = GEMINI_CLIENT.files.upload(file=video_path)
+                
+                # Poll until processing is complete
+                while video_file.state.name == "PROCESSING":
+                    time.sleep(1)
+                    video_file = GEMINI_CLIENT.files.get(name=video_file.name)
+                
+                if video_file.state.name == "FAILED":
+                    status_placeholder.error("Video processing failed on AI server.")
+                else:
+                    # Cache the file object reference
+                    st.session_state[current_video_key] = video_file
+                    status_placeholder.empty() # Clear the status message
+                    
+            except Exception as e:
+                st.warning(f"Video upload failed: {e}. Proceeding with text logs only.")
+        
+        # If upload was successful (or cached), add the file to the request contents
+        if current_video_key in st.session_state:
+            contents.append(st.session_state[current_video_key])
+
     try:
-        response = GEMINI_CLIENT.models.generate_content(model=GEMINI_MODEL, contents=[full_prompt])
+        response = GEMINI_CLIENT.models.generate_content(model=GEMINI_MODEL, contents=contents)
         return response.text
     except Exception as e:
         return f"AI Error: {e}"
@@ -406,6 +446,7 @@ def render_reports():
     # Data Loading
     df = st.session_state['alerts_df']
     trajectories = st.session_state['trajectories']
+    video_path = st.session_state.get('video_path')
 
     # --- TABS ---
     tab1, tab2, tab3, tab4 = st.tabs(["💬 Sentinel Chat", "🗺️ Heatmaps & Paths", "📊 Stats", "💾 Export"])
@@ -428,11 +469,11 @@ def render_reports():
             with st.chat_message("user"): st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                with st.spinner("Analyzing logs..."):
+                with st.spinner("Analyzing logs and video footage..."):
                     # Create a summary context (CSV) to save tokens
                     context = df[['time_s', 'object_class', 'Threat', 'Speed', 'AOI_Breach']].to_csv(index=False)
                     # Limit context size for API
-                    response = generate_gemini_response("CHAT", context[:15000], prompt)
+                    response = generate_gemini_response("CHAT", context[:15000], prompt, video_path)
                     st.markdown(response)
                     st.session_state.chat_history.append({"role": "assistant", "content": response})
 
@@ -490,7 +531,8 @@ def render_reports():
             if st.button("Generate Behavioral Hypothesis", type="primary"):
                 with st.spinner("Profiling..."):
                     obj_logs = df[df['object_id'] == target_id].to_json()
-                    res = generate_gemini_response("HYPOTHESIZE", obj_logs, user_query=f"Analyze ID {target_id}")
+                    # We can also pass video here if we want behavior analysis based on video
+                    res = generate_gemini_response("HYPOTHESIZE", obj_logs, user_query=f"Analyze ID {target_id}", video_path=video_path)
                     st.info(res) 
 
     # 4. EXPORT
